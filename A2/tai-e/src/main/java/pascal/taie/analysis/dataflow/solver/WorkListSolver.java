@@ -25,6 +25,12 @@ package pascal.taie.analysis.dataflow.solver;
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
+import pascal.taie.util.collection.Sets;
+
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
@@ -35,6 +41,25 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
     @Override
     protected void doSolveForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         // TODO - finish me
+        Set<Node> newWorkList = Sets.newHybridSet(cfg.getNodes());
+        Set<Node> oldWorkList = Sets.newHybridSet(Collections.emptySet());
+        Set<Node> tmpWorkList;
+        while (!newWorkList.isEmpty()) {
+            tmpWorkList = oldWorkList;
+            oldWorkList = newWorkList;
+            newWorkList = tmpWorkList;
+            for (Node node : oldWorkList) {
+                boolean hasChanged = false;
+                for (Node preNode : cfg.getPredsOf(node)) {
+                    analysis.meetInto(result.getOutFact(preNode), result.getInFact(node));
+                    hasChanged |= analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
+                }
+                if (hasChanged) {
+                    newWorkList.addAll(cfg.getSuccsOf(node));
+                }
+            }
+            oldWorkList.clear();
+        }
     }
 
     @Override
