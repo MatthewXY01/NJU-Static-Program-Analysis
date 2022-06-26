@@ -22,7 +22,6 @@
 
 package pascal.taie.analysis.dataflow.analysis.constprop;
 
-import fj.P;
 import pascal.taie.analysis.dataflow.analysis.AbstractDataflowAnalysis;
 import pascal.taie.analysis.graph.cfg.CFG;
 import pascal.taie.config.AnalysisConfig;
@@ -33,9 +32,6 @@ import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.language.type.PrimitiveType;
 import pascal.taie.language.type.Type;
 import pascal.taie.util.AnalysisException;
-
-import java.util.List;
-import java.util.Optional;
 
 public class ConstantPropagation extends
         AbstractDataflowAnalysis<Stmt, CPFact> {
@@ -87,30 +83,25 @@ public class ConstantPropagation extends
     public Value meetValue(Value v1, Value v2) {
         // TODO - finish me
         // NAC meet whatever -> NAC
-        if (v1.isNAC() || v2.isNAC()) {
-            return Value.getNAC();
-        } else if (v1.isConstant() && v2.isConstant()) { // c meet c -> c; c1 meet c2 -> NAC
-            return v1.getConstant() == v2.getConstant() ? v1 : Value.getNAC();
-        } else { // at most 1 constant -> return it is
-            return v1.isConstant() ? v1 : v2;
-        }
+        if (v1.isNAC() || v2.isNAC()) return Value.getNAC();
+        // c meet c -> c; c1 meet c2 -> NAC
+        if (v1.isConstant() && v2.isConstant()) return v1.getConstant() == v2.getConstant() ? v1 : Value.getNAC();
+        // at most 1 constant -> return it is
+        return v1.isConstant() ? v1 : v2;
 //        return null;
     }
 
     @Override
     public boolean transferNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        Optional<LValue> lValueOptional = stmt.getDef();
-        if (!(lValueOptional.isPresent() && lValueOptional.get() instanceof Var lValue && canHoldInt(lValue)) ) { // identity function
-            return out.copyFrom(in);
-        }
+        if (! (stmt instanceof DefinitionStmt<?,?>)) return out.copyFrom(in);
+        DefinitionStmt<LValue, RValue> defStmt = (DefinitionStmt<LValue, RValue>) stmt;
+        LValue lValue = defStmt.getLValue();
+        if (!(lValue instanceof Var var && canHoldInt(var))) return out.copyFrom(in);
+
         CPFact inCopy = in.copy();
-        CPFact gen = new CPFact();
-        List<RValue> rValueList  = stmt.getUses();
-        RValue rValue = rValueList.get(rValueList.size()-1);
-        gen.update(lValue, evaluate(rValue, inCopy));
-        inCopy.remove(lValue); // IN[s]-{x,_}
-        meetInto(gen, inCopy);
+        RValue rValue = defStmt.getRValue();
+        inCopy.update(var, evaluate(rValue, in));
         return out.copyFrom(inCopy);
 //        return false;
     }
@@ -143,7 +134,7 @@ public class ConstantPropagation extends
     public static Value evaluate(Exp exp, CPFact in) {
         // TODO - finish me
         // x=y -> val(y)
-        if (exp instanceof Var var && canHoldInt(var)) return in.get(var);
+        if (exp instanceof Var var) return in.get(var);
 
         // x=c -> c
         if (exp instanceof IntLiteral intLiteral) return Value.makeConstant(intLiteral.getValue());
@@ -154,46 +145,51 @@ public class ConstantPropagation extends
             Var opd2 = binaryExp.getOperand2();
             Value opd1AbstractValue = in.get(opd1);
             Value opd2AbstractValue = in.get(opd2);
-            if (opd1AbstractValue.isUndef() || opd2AbstractValue.isUndef()) { // any opd is UNDEF -> UNDEF
-                return Value.getUndef();
-            }
-            if (opd2AbstractValue.isNAC()) {
-                // in case that exp=NAC/0, which should return UNDEF,
-                // opd1=NAC is not enough to call return
-                return Value.getNAC();
-            }
-            int opd2Value = opd2AbstractValue.getConstant();
+            // any opd is UNDEF -> UNDEF
+            if (opd1AbstractValue.isUndef() || opd2AbstractValue.isUndef()) return Value.getUndef();
+            // in case that exp=NAC/0, which should return UNDEF,
+            // opd1=NAC is not enough to call return
+            int opd1Value = 0;
+            int opd2Value = 0;
+            boolean opd1IsNAC = opd1AbstractValue.isNAC();
+            if (!opd1IsNAC) opd1Value = opd1AbstractValue.getConstant();
+            if (opd2AbstractValue.isNAC()) return Value.getNAC();
+            opd2Value = opd2AbstractValue.getConstant();
 
             // binary exp is arithmetic exp
             if (binaryExp instanceof ArithmeticExp arithmeticExp) {
                 ArithmeticExp.Op op = arithmeticExp.getOperator();
                 switch (op) {
-                    case ADD:
-                        if (opd1AbstractValue.isNAC()) return Value.getNAC();
-                        return Value.makeConstant(opd1AbstractValue.getConstant() + opd2Value);
-                    case SUB:
-                        if (opd1AbstractValue.isNAC()) return Value.getNAC();
-                        return Value.makeConstant(opd1AbstractValue.getConstant() - opd2Value);
-                    case MUL:
-                        if (opd1AbstractValue.isNAC()) return Value.getNAC();
-                        return Value.makeConstant(opd1AbstractValue.getConstant() * opd2Value);
-                    case DIV:
+                    case ADD -> {
+                        if (opd1IsNAC) return Value.getNAC();
+                        return Value.makeConstant(opd1Value + opd2Value);
+                    }
+                    case SUB -> {
+                        if (opd1IsNAC) return Value.getNAC();
+                        return Value.makeConstant(opd1Value - opd2Value);
+                    }
+                    case MUL -> {
+                        if (opd1IsNAC) return Value.getNAC();
+                        return Value.makeConstant(opd1Value * opd2Value);
+                    }
+                    case DIV -> {
                         // check whether opd2 is the constant 0 first.
-                        if (opd2Value == 0 ) return Value.getUndef();
-                        if (opd1AbstractValue.isNAC()) return Value.getNAC();
-                        return Value.makeConstant(opd1AbstractValue.getConstant() / opd2Value);
-                    case REM:
-                        if (opd2Value == 0 ) return Value.getUndef();
-                        if (opd1AbstractValue.isNAC()) return Value.getNAC();
-                        return Value.makeConstant(opd1AbstractValue.getConstant() % opd2Value);
+                        if (opd2Value == 0) return Value.getUndef();
+                        if (opd1IsNAC) return Value.getNAC();
+                        return Value.makeConstant(opd1Value / opd2Value);
+                    }
+                    case REM -> {
+                        if (opd2Value == 0) return Value.getUndef();
+                        if (opd1IsNAC) return Value.getNAC();
+                        return Value.makeConstant(opd1Value % opd2Value);
+                    }
                 }
             }
 
             // binary exp other than arithmetic exp
-            if (opd1AbstractValue.isNAC()) {
+            if (opd1IsNAC) {
                 return Value.getNAC();
             }
-            int opd1Value = opd1AbstractValue.getConstant();
             if (binaryExp instanceof ConditionExp conditionExp) {
                 ConditionExp.Op op = conditionExp.getOperator();
                 switch (op) {

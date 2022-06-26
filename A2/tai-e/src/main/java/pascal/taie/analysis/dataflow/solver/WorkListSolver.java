@@ -48,12 +48,14 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
             tmpWorkList = oldWorkList;
             oldWorkList = newWorkList;
             newWorkList = tmpWorkList;
+            boolean hasChanged;
             for (Node node : oldWorkList) {
-                boolean hasChanged = false;
+                hasChanged = false;
+                if (cfg.isEntry(node) || cfg.isExit(node)) continue;
                 for (Node preNode : cfg.getPredsOf(node)) {
                     analysis.meetInto(result.getOutFact(preNode), result.getInFact(node));
-                    hasChanged |= analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
                 }
+                hasChanged = analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
                 if (hasChanged) {
                     newWorkList.addAll(cfg.getSuccsOf(node));
                 }
