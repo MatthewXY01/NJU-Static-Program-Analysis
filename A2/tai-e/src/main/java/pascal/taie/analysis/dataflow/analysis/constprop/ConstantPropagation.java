@@ -51,7 +51,9 @@ public class ConstantPropagation extends
     public CPFact newBoundaryFact(CFG<Stmt> cfg) {
         // TODO - finish me
         CPFact boundaryFact = new CPFact();
-        cfg.getIR().getParams().forEach(var -> boundaryFact.update(var, Value.getNAC()));
+        cfg.getIR().getParams().forEach(var -> {
+            if (canHoldInt(var)) boundaryFact.update(var, Value.getNAC());
+        });
         return boundaryFact;
 //        return null;
     }
