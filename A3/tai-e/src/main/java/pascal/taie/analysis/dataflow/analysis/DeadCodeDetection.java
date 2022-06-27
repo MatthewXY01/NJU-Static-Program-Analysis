@@ -33,21 +33,14 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.AssignStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.util.collection.Pair;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -70,8 +63,92 @@ public class DeadCodeDetection extends MethodAnalysis {
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
         // TODO - finish me
+//        Set<Stmt> allCode = new HashSet<>(cfg.getNodes());
+        deadCode.addAll(cfg.getNodes());
+        Set<Stmt> liveCode = new HashSet<>();
+        Stmt entryNode = cfg.getEntry();
+        liveCode.add(entryNode);
+        Stack<Stmt> stack = new Stack<>();
+        stack.add(entryNode);
+        while (!stack.isEmpty()) {
+            Stmt node = stack.pop();
+            if (node instanceof If ifStmt) {
+                // get condition exp
+                ConditionExp conditionExp = ifStmt.getCondition();
+
+                // Edge.Kind.IF_FALSE.ordinal(): always false
+                // Edge.Kind.IF_TRUE.ordinal(): always true
+                // -1: unknown
+                int conditionValue = evalCondition(conditionExp, constants);
+                if (conditionValue >= 0) {
+                    Edge.Kind targetKind = Edge.Kind.values()[conditionValue];
+                    cfg.getOutEdgesOf(ifStmt).forEach( outEdge -> {
+                        if (outEdge.getKind() == targetKind) {
+                            Stmt targetStmt = outEdge.getTarget();
+                            if (liveCode.add(targetStmt)) {
+                                stack.push(targetStmt);
+                            }
+                        }
+                    });
+                } else {
+                    cfg.getOutEdgesOf(ifStmt).forEach( outEdge -> {
+                        Stmt targetStmt = outEdge.getTarget();
+                        if (liveCode.add(targetStmt)) {
+                            stack.push(targetStmt);
+                        }
+                    });
+                }
+                continue;
+            } else if (node instanceof SwitchStmt switchStmt) {
+                Var switchVar = switchStmt.getVar();
+                Value caseAbstractValue = constants.getResult(switchStmt).get(switchVar);
+                boolean mustReachDefault = true;
+                if (caseAbstractValue.isConstant()) {
+                    int caseValue = caseAbstractValue.getConstant();
+                    Stmt priorityTarget = null;
+                    for (Pair<Integer, Stmt> caseTargetPair:switchStmt.getCaseTargets()) {
+                        if (caseTargetPair.first().intValue() == caseValue) {
+                            mustReachDefault = false;
+                            priorityTarget = caseTargetPair.second();
+                            break;
+                        }
+                    }
+                    if (priorityTarget != null) {
+                        if (liveCode.add(priorityTarget)) {
+                            stack.push(priorityTarget);
+                        }
+                    }
+                } else if (caseAbstractValue.isNAC()){
+                    switchStmt.getCaseTargets().forEach( caseTargetPair -> {
+                        if (liveCode.add(caseTargetPair.second())) {
+                            stack.push(caseTargetPair.second());
+                        }
+                    });
+                }
+                if (mustReachDefault && switchStmt.getDefaultTarget()!=null) {
+                    if (liveCode.add(switchStmt.getDefaultTarget())) {
+                        stack.push(switchStmt.getDefaultTarget());
+                    }
+                }
+            } else if (node instanceof AssignStmt<?,?> assignStmt) {
+                // TODO
+            }
+            // Push all successors(not seen yet) of the current node into the stack.
+            // For the node that has already killed some successor(s), code should not reach here.
+            for (Stmt stmt: cfg.getSuccsOf(node)) {
+                if (liveCode.add(stmt)) {
+                    stack.push(stmt);
+                }
+            }
+        }
+        deadCode.removeAll(liveCode);
+
         // Your task is to recognize dead code in ir and add it to deadCode
         return deadCode;
+    }
+
+    public int evalCondition(ConditionExp conditionExp, DataflowResult<Stmt, CPFact> constants) {
+        return -1;
     }
 
     /**
