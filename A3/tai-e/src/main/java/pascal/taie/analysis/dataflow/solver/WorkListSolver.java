@@ -25,6 +25,10 @@ package pascal.taie.analysis.dataflow.solver;
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
+import pascal.taie.util.collection.Sets;
+
+import java.util.Collections;
+import java.util.Set;
 
 class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
@@ -35,10 +39,52 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
     @Override
     protected void doSolveForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         // TODO - finish me
+        Set<Node> newWorkList = Sets.newHybridSet(cfg.getNodes());
+        Set<Node> oldWorkList = Sets.newHybridSet(Collections.emptySet());
+        Set<Node> tmpWorkList;
+        while (!newWorkList.isEmpty()) {
+            tmpWorkList = oldWorkList;
+            oldWorkList = newWorkList;
+            newWorkList = tmpWorkList;
+            boolean hasChanged;
+            for (Node node : oldWorkList) {
+                hasChanged = false;
+                if (cfg.isEntry(node) || cfg.isExit(node)) continue;
+                for (Node preNode : cfg.getPredsOf(node)) {
+                    analysis.meetInto(result.getOutFact(preNode), result.getInFact(node));
+                }
+                hasChanged = analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
+                if (hasChanged) {
+                    newWorkList.addAll(cfg.getSuccsOf(node));
+                }
+            }
+            oldWorkList.clear();
+        }
     }
 
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
         // TODO - finish me
+        Set<Node> newWorkList = Sets.newHybridSet(cfg.getNodes());
+        Set<Node> oldWorkList = Sets.newHybridSet(Collections.emptySet());
+        Set<Node> tmpWorkList;
+        while (!newWorkList.isEmpty()) {
+            tmpWorkList = oldWorkList;
+            oldWorkList = newWorkList;
+            newWorkList = tmpWorkList;
+            boolean hasChanged;
+            for (Node node : oldWorkList) {
+                hasChanged = false;
+                if (cfg.isEntry(node) || cfg.isExit(node)) continue;
+                for (Node sucNode : cfg.getSuccsOf(node)) {
+                    analysis.meetInto(result.getInFact(sucNode), result.getOutFact(node));
+                }
+                hasChanged = analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
+                if (hasChanged) {
+                    newWorkList.addAll(cfg.getPredsOf(node));
+                }
+            }
+            oldWorkList.clear();
+        }
     }
 }
