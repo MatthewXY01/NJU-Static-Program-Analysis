@@ -67,11 +67,14 @@ public class DeadCodeDetection extends MethodAnalysis {
         deadCode.addAll(cfg.getNodes());
         Set<Stmt> liveCode = new HashSet<>();
         Stmt entryNode = cfg.getEntry();
+        Stmt exitNode = cfg.getEntry();
         liveCode.add(entryNode);
+        liveCode.add(exitNode);
         Stack<Stmt> stack = new Stack<>();
         stack.add(entryNode);
         while (!stack.isEmpty()) {
             Stmt node = stack.pop();
+            // meet If Statement
             if (node instanceof If ifStmt) {
                 // get condition exp
                 ConditionExp conditionExp = ifStmt.getCondition();
@@ -79,67 +82,66 @@ public class DeadCodeDetection extends MethodAnalysis {
                 // Edge.Kind.IF_FALSE.ordinal(): always false
                 // Edge.Kind.IF_TRUE.ordinal(): always true
                 // -1: unknown
-                int conditionValue = evalCondition(conditionExp, constants);
+                int conditionValue = evalConditionExp(ifStmt, conditionExp, constants);
                 if (conditionValue >= 0) {
-                    Edge.Kind targetKind = Edge.Kind.values()[conditionValue];
+                    // always true or false
+                    Edge.Kind targetKind = Edge.Kind.values()[conditionValue-1];
                     cfg.getOutEdgesOf(ifStmt).forEach( outEdge -> {
                         if (outEdge.getKind() == targetKind) {
-                            Stmt targetStmt = outEdge.getTarget();
-                            if (liveCode.add(targetStmt)) {
-                                stack.push(targetStmt);
-                            }
+                            processReachableNode(cfg, outEdge.getTarget(), liveCode, stack);
                         }
                     });
                 } else {
                     cfg.getOutEdgesOf(ifStmt).forEach( outEdge -> {
-                        Stmt targetStmt = outEdge.getTarget();
-                        if (liveCode.add(targetStmt)) {
-                            stack.push(targetStmt);
-                        }
+                        processReachableNode(cfg, outEdge.getTarget(), liveCode, stack);
                     });
                 }
                 continue;
             } else if (node instanceof SwitchStmt switchStmt) {
                 Var switchVar = switchStmt.getVar();
                 Value caseAbstractValue = constants.getResult(switchStmt).get(switchVar);
-                boolean mustReachDefault = true;
+                boolean defaultReachable = true;
                 if (caseAbstractValue.isConstant()) {
                     int caseValue = caseAbstractValue.getConstant();
                     Stmt priorityTarget = null;
                     for (Pair<Integer, Stmt> caseTargetPair:switchStmt.getCaseTargets()) {
-                        if (caseTargetPair.first().intValue() == caseValue) {
-                            mustReachDefault = false;
+                        if (caseTargetPair.first() == caseValue) {
+                            // find the first match
+                            defaultReachable = false;
                             priorityTarget = caseTargetPair.second();
                             break;
                         }
                     }
-                    if (priorityTarget != null) {
-                        if (liveCode.add(priorityTarget)) {
-                            stack.push(priorityTarget);
-                        }
-                    }
+                    // NOTE: specific cases may still not exist even caseValue is Constant, thus priorityTarget is null.
+                    // don't worry, we check the null value and handle the default case uniformly in the end.
+                    processReachableNode(cfg, priorityTarget, liveCode, stack);
                 } else if (caseAbstractValue.isNAC()){
                     switchStmt.getCaseTargets().forEach( caseTargetPair -> {
-                        if (liveCode.add(caseTargetPair.second())) {
-                            stack.push(caseTargetPair.second());
-                        }
+                        processReachableNode(cfg, caseTargetPair.second(), liveCode, stack);
                     });
                 }
-                if (mustReachDefault && switchStmt.getDefaultTarget()!=null) {
-                    if (liveCode.add(switchStmt.getDefaultTarget())) {
-                        stack.push(switchStmt.getDefaultTarget());
-                    }
+                if (defaultReachable) {
+                    processReachableNode(cfg, switchStmt.getDefaultTarget(), liveCode, stack);
                 }
             } else if (node instanceof AssignStmt<?,?> assignStmt) {
-                // TODO
-            }
-            // Push all successors(not seen yet) of the current node into the stack.
-            // For the node that has already killed some successor(s), code should not reach here.
-            for (Stmt stmt: cfg.getSuccsOf(node)) {
-                if (liveCode.add(stmt)) {
-                    stack.push(stmt);
+                LValue lValue = assignStmt.getLValue();
+                if (! (lValue instanceof Var var)) {
+//                    processReachableNode(cfg, assignStmt, liveCode, stack);
+                }else {
+                    SetFact<Var> fact = liveVars.getOutFact(assignStmt);
+                    if (!fact.contains(var)) {
+                        continue;
+//                        processReachableNode(cfg, assignStmt, liveCode, stack);
+                    }
                 }
             }
+//            else {
+            for (Stmt sucNode:cfg.getSuccsOf(node)) {
+                processReachableNode(cfg, sucNode, liveCode, stack);
+            }
+//                processReachableNode(cfg, node, liveCode, stack);
+
+//            }
         }
         deadCode.removeAll(liveCode);
 
@@ -147,8 +149,33 @@ public class DeadCodeDetection extends MethodAnalysis {
         return deadCode;
     }
 
-    public int evalCondition(ConditionExp conditionExp, DataflowResult<Stmt, CPFact> constants) {
+    public int evalConditionExp(Stmt stmt, ConditionExp exp, DataflowResult<Stmt, CPFact> constants) {
+        CPFact fact = constants.getResult(stmt);
+        Var opd1 = exp.getOperand1();
+        Var opd2 = exp.getOperand2();
+        Value opd1AbstractValue = fact.get(opd1);
+        Value opd2AbstractValue = fact.get(opd2);
+        int ifTrueOrdinal = Edge.Kind.IF_TRUE.ordinal();
+        int ifFalseOrdinal = Edge.Kind.IF_FALSE.ordinal();
+        ConditionExp.Op op = exp.getOperator();
+        if (opd1AbstractValue.isConstant() && opd2AbstractValue.isConstant()) {
+            int opd1Value = opd1AbstractValue.getConstant();
+            int opd2Value = opd1AbstractValue.getConstant();
+            switch (op) {
+                case EQ -> {return opd1Value == opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
+                case NE -> {return opd1Value != opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
+                case LT -> {return opd1Value < opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
+                case GT -> {return opd1Value > opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
+                case LE -> {return opd1Value <= opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
+                case GE -> {return opd1Value >= opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
+            }
+        }
         return -1;
+    }
+    public void processReachableNode(CFG<Stmt> cfg, Stmt stmt, Set<Stmt> liveCode, Stack<Stmt> stack) {
+//        for (Stmt sucNode: cfg.getSuccsOf(stmt)) {
+        if (stmt != null && liveCode.add(stmt)) stack.push(stmt);
+//        }
     }
 
     /**
