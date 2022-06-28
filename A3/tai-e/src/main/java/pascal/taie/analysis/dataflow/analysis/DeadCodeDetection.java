@@ -63,19 +63,18 @@ public class DeadCodeDetection extends MethodAnalysis {
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
         // TODO - finish me
-//        Set<Stmt> allCode = new HashSet<>(cfg.getNodes());
+        Set<Stmt> unvisited = new HashSet<>(cfg.getNodes());
         deadCode.addAll(cfg.getNodes());
         Set<Stmt> liveCode = new HashSet<>();
         Stmt entryNode = cfg.getEntry();
-        Stmt exitNode = cfg.getEntry();
-        liveCode.add(entryNode);
-        liveCode.add(exitNode);
+        Stmt exitNode = cfg.getExit();
+        liveCode.add(exitNode); // exitNode always live
         Stack<Stmt> stack = new Stack<>();
-        stack.add(entryNode);
+        stack.add(entryNode); // start from entryNode
+        unvisited.remove(entryNode);
         while (!stack.isEmpty()) {
-            Stmt node = stack.pop();
-            // meet If Statement
-            if (node instanceof If ifStmt) {
+            Stmt stmt = stack.pop();
+            if (stmt instanceof If ifStmt) {
                 // get condition exp
                 ConditionExp conditionExp = ifStmt.getCondition();
 
@@ -85,63 +84,58 @@ public class DeadCodeDetection extends MethodAnalysis {
                 int conditionValue = evalConditionExp(ifStmt, conditionExp, constants);
                 if (conditionValue >= 0) {
                     // always true or false
-                    Edge.Kind targetKind = Edge.Kind.values()[conditionValue-1];
+                    Edge.Kind targetKind = Edge.Kind.values()[conditionValue];
                     cfg.getOutEdgesOf(ifStmt).forEach( outEdge -> {
-                        if (outEdge.getKind() == targetKind) {
-                            processReachableNode(cfg, outEdge.getTarget(), liveCode, stack);
-                        }
+                        if (outEdge.getKind() == targetKind)
+                            visitStmt(outEdge.getTarget(), unvisited, stack);
                     });
                 } else {
-                    cfg.getOutEdgesOf(ifStmt).forEach( outEdge -> {
-                        processReachableNode(cfg, outEdge.getTarget(), liveCode, stack);
-                    });
+                    cfg.getOutEdgesOf(ifStmt).forEach( outEdge -> visitStmt(outEdge.getTarget(), unvisited, stack));
                 }
+                liveCode.add(ifStmt);
                 continue;
-            } else if (node instanceof SwitchStmt switchStmt) {
+            } else if (stmt instanceof SwitchStmt switchStmt) {
                 Var switchVar = switchStmt.getVar();
                 Value caseAbstractValue = constants.getResult(switchStmt).get(switchVar);
-                boolean defaultReachable = true;
+                boolean defaultCaseReachable = true;
                 if (caseAbstractValue.isConstant()) {
                     int caseValue = caseAbstractValue.getConstant();
-                    Stmt priorityTarget = null;
+                    Stmt priorityCase = null;
                     for (Pair<Integer, Stmt> caseTargetPair:switchStmt.getCaseTargets()) {
                         if (caseTargetPair.first() == caseValue) {
                             // find the first match
-                            defaultReachable = false;
-                            priorityTarget = caseTargetPair.second();
+                            defaultCaseReachable = false;
+                            priorityCase = caseTargetPair.second();
                             break;
                         }
                     }
-                    // NOTE: specific cases may still not exist even caseValue is Constant, thus priorityTarget is null.
-                    // don't worry, we check the null value and handle the default case uniformly in the end.
-                    processReachableNode(cfg, priorityTarget, liveCode, stack);
+                    // NOTE: specific cases may still not exist even caseValue is Constant, thus priorityCase is null.
+                    // don't worry, we check the null value and handle the default case uniformly after 'else if'.
+                    visitStmt(priorityCase, unvisited, stack);
                 } else if (caseAbstractValue.isNAC()){
-                    switchStmt.getCaseTargets().forEach( caseTargetPair -> {
-                        processReachableNode(cfg, caseTargetPair.second(), liveCode, stack);
-                    });
+                    switchStmt.getCaseTargets()
+                        .forEach( caseTargetPair -> visitStmt(caseTargetPair.second(), unvisited, stack));
                 }
-                if (defaultReachable) {
-                    processReachableNode(cfg, switchStmt.getDefaultTarget(), liveCode, stack);
+                if (defaultCaseReachable) {
+                    visitStmt(switchStmt.getDefaultTarget(), unvisited, stack);
                 }
-            } else if (node instanceof AssignStmt<?,?> assignStmt) {
+                liveCode.add(switchStmt);
+                continue;
+            } else if (stmt instanceof AssignStmt<?,?> assignStmt) {
                 LValue lValue = assignStmt.getLValue();
-                if (! (lValue instanceof Var var)) {
-//                    processReachableNode(cfg, assignStmt, liveCode, stack);
-                }else {
-                    SetFact<Var> fact = liveVars.getOutFact(assignStmt);
-                    if (!fact.contains(var)) {
-                        continue;
-//                        processReachableNode(cfg, assignStmt, liveCode, stack);
-                    }
+                RValue rValue = assignStmt.getRValue();
+                if ( !(lValue instanceof Var var && hasNoSideEffect(rValue)) ) {
+                    liveCode.add(assignStmt);
+                }else if (liveVars.getOutFact(assignStmt).contains(var)){
+                    liveCode.add(assignStmt);
                 }
+            } else {
+                liveCode.add(stmt);
             }
-//            else {
-            for (Stmt sucNode:cfg.getSuccsOf(node)) {
-                processReachableNode(cfg, sucNode, liveCode, stack);
+            // for the IF and SWITCH Statements, we have checked unreachable branch, code should not reach here.
+            for (Stmt sucStmt:cfg.getSuccsOf(stmt)) {
+                visitStmt(sucStmt, unvisited, stack);
             }
-//                processReachableNode(cfg, node, liveCode, stack);
-
-//            }
         }
         deadCode.removeAll(liveCode);
 
@@ -160,7 +154,7 @@ public class DeadCodeDetection extends MethodAnalysis {
         ConditionExp.Op op = exp.getOperator();
         if (opd1AbstractValue.isConstant() && opd2AbstractValue.isConstant()) {
             int opd1Value = opd1AbstractValue.getConstant();
-            int opd2Value = opd1AbstractValue.getConstant();
+            int opd2Value = opd2AbstractValue.getConstant();
             switch (op) {
                 case EQ -> {return opd1Value == opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
                 case NE -> {return opd1Value != opd2Value ? ifTrueOrdinal : ifFalseOrdinal;}
@@ -172,10 +166,9 @@ public class DeadCodeDetection extends MethodAnalysis {
         }
         return -1;
     }
-    public void processReachableNode(CFG<Stmt> cfg, Stmt stmt, Set<Stmt> liveCode, Stack<Stmt> stack) {
-//        for (Stmt sucNode: cfg.getSuccsOf(stmt)) {
-        if (stmt != null && liveCode.add(stmt)) stack.push(stmt);
-//        }
+
+    public void visitStmt(Stmt stmt, Set<Stmt> unvisited, Stack<Stmt> stack) {
+        if (stmt != null && unvisited.remove(stmt)) stack.push(stmt);
     }
 
     /**
