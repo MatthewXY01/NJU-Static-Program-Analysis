@@ -138,21 +138,21 @@ class Solver {
         }
         public Void visit(Invoke invoke) {
             if (invoke.isStatic()) {
-                Var callSiteReturnVar = invoke.getResult();
-                JMethod method = resolveCallee(null, invoke);
-                if (callGraph.addEdge(new Edge<>(CallKind.STATIC, invoke, method))) {
-                    addReachable(method);
+                Var callSiteRetVar = invoke.getResult();
+                JMethod callee = resolveCallee(null, invoke);
+                if (callGraph.addEdge(new Edge<>(CallKind.STATIC, invoke, callee))) {
+                    addReachable(callee);
                     List<Var> argList = invoke.getInvokeExp().getArgs();
-                    IR ir =  method.getIR();
+                    IR ir =  callee.getIR();
                     List<Var> paramList = ir.getParams();
                     assert argList.size() == paramList.size();
                     for (int i = 0; i< argList.size(); i++) {
                         addPFGEdge(pointerFlowGraph.getVarPtr(argList.get(i)), pointerFlowGraph.getVarPtr(paramList.get(i)));
                     }
-                    if (callSiteReturnVar != null) {
+                    if (callSiteRetVar != null) {
                         // not return void
-                        VarPtr callSiteReturnVarPtr = pointerFlowGraph.getVarPtr(callSiteReturnVar);
-                        ir.getReturnVars().forEach( returnVar -> addPFGEdge(pointerFlowGraph.getVarPtr(returnVar), callSiteReturnVarPtr));
+                        VarPtr callSiteRetVarPtr = pointerFlowGraph.getVarPtr(callSiteRetVar);
+                        ir.getReturnVars().forEach( returnVar -> addPFGEdge(pointerFlowGraph.getVarPtr(returnVar), callSiteRetVarPtr));
                     }
                 }
             }
@@ -248,12 +248,12 @@ class Solver {
                         for(int i = 0; i<argList.size(); i++) {
                             addPFGEdge(pointerFlowGraph.getVarPtr(argList.get(i)), pointerFlowGraph.getVarPtr(paramList.get(i)));
                         }
-                        Var callSiteReceiverVar = invoke.getResult();
-                        if (callSiteReceiverVar != null) {
+                        Var callSiteRetVar = invoke.getResult();
+                        if (callSiteRetVar != null) {
                             // not return void
-                            VarPtr callSiteReceiverVarPtr = pointerFlowGraph.getVarPtr(callSiteReceiverVar);
+                            VarPtr callSiteRetVarPtr = pointerFlowGraph.getVarPtr(callSiteRetVar);
                             // may have multiple return vars
-                            ir.getReturnVars().forEach( returnVar -> addPFGEdge(pointerFlowGraph.getVarPtr(returnVar), callSiteReceiverVarPtr));
+                            ir.getReturnVars().forEach( returnVar -> addPFGEdge(pointerFlowGraph.getVarPtr(returnVar), callSiteRetVarPtr));
                         }
                     }
         });
