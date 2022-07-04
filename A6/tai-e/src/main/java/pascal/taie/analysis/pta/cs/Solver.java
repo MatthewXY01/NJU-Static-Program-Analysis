@@ -291,7 +291,7 @@ class Solver {
                 .forEach( invoke -> {
                     CSCallSite csCallSite = csManager.getCSCallSite(context, invoke);
                     JMethod callee = resolveCallee(recvObj, invoke);
-                    Context calleeContext = contextSelector.selectContext(csCallSite, callee);
+                    Context calleeContext = contextSelector.selectContext(csCallSite, recvObj, callee);
                     CSMethod csCallee = csManager.getCSMethod(calleeContext, callee);
                     IR ir = callee.getIR();
                     CSVar csCalleeThis = csManager.getCSVar(calleeContext, ir.getThis());
