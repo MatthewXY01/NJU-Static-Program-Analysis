@@ -31,9 +31,6 @@ import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.language.classes.JMethod;
 
-import java.lang.invoke.CallSite;
-import java.util.List;
-
 /**
  * Implementation of 2-call-site sensitivity.
  */

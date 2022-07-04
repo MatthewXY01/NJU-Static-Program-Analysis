@@ -175,7 +175,6 @@ class Solver {
             CSCallSite csCallSite = csManager.getCSCallSite(context, invoke);
             JMethod callee = resolveCallee(null, invoke);
             Context calleeContext = contextSelector.selectContext(csCallSite, callee);
-//            invoke.getMethodRef().resolve();
             IR ir = callee.getIR();
             CSMethod csCallee = csManager.getCSMethod(calleeContext, callee);
             List<Var> argList = invoke.getInvokeExp().getArgs();
@@ -206,9 +205,7 @@ class Solver {
         // TODO - finish me
         if (pointerFlowGraph.addEdge(source, target)) {
             PointsToSet pts = source.getPointsToSet();
-            if (!pts.isEmpty()) {
-                workList.addEntry(target, pts);
-            }
+            if (!pts.isEmpty()) workList.addEntry(target, pts);
         }
     }
 

@@ -65,8 +65,6 @@ public class _2TypeSelector implements ContextSelector {
         int methodInContextLength = methodInContext.getLength();
         if (methodInContextLength == 0) return ListContext.make();
         return ListContext.make(methodInContext.getElementAt(methodInContextLength-1));
-//        return ListContext.make(method.getMethod().getDeclaringClass().getType());
-//        return ListContext.make(method.getMethod().getDeclaringClass().getType());
 //        return null;
     }
 }
