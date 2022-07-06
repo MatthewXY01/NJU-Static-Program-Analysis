@@ -24,11 +24,12 @@ package pascal.taie.analysis.dataflow.inter;
 
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.icfg.ICFG;
-import pascal.taie.util.collection.SetQueue;
+import pascal.taie.util.collection.HybridArrayHashSet;
 
+import java.util.Collection;
+import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * Solver for inter-procedural data-flow analysis.
@@ -45,6 +46,8 @@ class InterSolver<Method, Node, Fact> {
 
     private Queue<Node> workList;
 
+    private Set<Node> updateNodeSet;
+
     InterSolver(InterDataflowAnalysis<Node, Fact> analysis,
                 ICFG<Method, Node> icfg) {
         this.analysis = analysis;
@@ -60,9 +63,43 @@ class InterSolver<Method, Node, Fact> {
 
     private void initialize() {
         // TODO - finish me
+        updateNodeSet = new HybridArrayHashSet<>();
+        workList = new LinkedList<>(icfg.getNodes());
+        icfg.getNodes().forEach( node -> {
+            result.setInFact(node, analysis.newInitialFact());
+            result.setOutFact(node, analysis.newInitialFact());
+        });
+        icfg.entryMethods().forEach( entryMethod -> {
+            Node entryNode = icfg.getEntryOf(entryMethod);
+            result.setOutFact(entryNode, analysis.newBoundaryFact(entryNode));
+        });
     }
 
     private void doSolve() {
         // TODO - finish me
+        boolean hasChanged;
+        while (true) {
+            do {
+                Node node = workList.poll();
+                icfg.getInEdgesOf(node).forEach(inEdge -> {
+                    Fact edgeOutFact = analysis.transferEdge(inEdge, result.getOutFact(inEdge.getSource()));
+                    analysis.meetInto(edgeOutFact, result.getInFact(node));
+                });
+                hasChanged = analysis.transferNode(node, result.getInFact(node), result.getOutFact(node));
+                if (hasChanged) {
+                    workList.addAll(icfg.getSuccsOf(node));
+                }
+            } while (!workList.isEmpty());
+            if (updateNodeSet.isEmpty()) break;
+            workList.addAll(updateNodeSet);
+            updateNodeSet.clear();
+        }
     }
+
+    protected Fact getOutFact(Node storeField) {
+        return result.getOutFact(storeField);
+    }
+
+    protected void addToUpdate(Node node){ updateNodeSet.add(node);}
+    protected void addToUpdate(Collection<? extends Node> c){updateNodeSet.addAll(c);}
 }
