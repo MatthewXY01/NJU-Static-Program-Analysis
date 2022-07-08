@@ -32,15 +32,13 @@ import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
 import pascal.taie.analysis.graph.icfg.NormalEdge;
 import pascal.taie.analysis.graph.icfg.ReturnEdge;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
+import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
 import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
-import pascal.taie.language.type.ArrayType;
-import pascal.taie.language.type.PrimitiveType;
-import pascal.taie.language.type.Type;
 import pascal.taie.util.collection.HybridArrayHashMap;
 import pascal.taie.util.collection.HybridArrayHashSet;
 
@@ -57,21 +55,18 @@ public class InterConstantPropagation extends
     public static final String ID = "inter-constprop";
 
     private final ConstantPropagation cp;
-    // static field -> their store statements
+    // static field -> their store stmts
     private Map<JField, Set<StoreField>> storeStaticFieldOn;
-    // static field -> their store statements
+    // static field -> their store stmts
     private Map<JField, Set<LoadField>> loadStaticFieldOn;
-    // base variable of the field -> their store statements
+    // base variable of the field -> store stmts of the field (and their aliases)
     private Map<Var, Set<StoreField>> storeInstanceFieldOn;
-    // base variable of the field -> their load statements
+    // base variable of the field -> load stmts of the field (and their aliases)
     private Map<Var, Set<LoadField>> loadInstanceFieldOn;
-    // base variable of the array -> their store statements
+    // base variable of the array -> store stmts of the array (and their potential (regardless of the index) alases)
     private Map<Var, Set<StoreArray>> storeArrayOn;
-    // base variable of the array -> their load statements
+    // base variable of the array -> load stmts of the array (and their potential (regardless of the index) alases)
     private Map<Var, Set<LoadArray>> loadArrayOn;
-    // variable v -> set of variables, pts of each one within it has intersection with that of v
-    private Map<Var, Set<Var>> potentialFieldAliasOf;
-    private Map<Var, Set<Var>> potentialArrayAliasOf;
 
     public InterConstantPropagation(AnalysisConfig config) {
         super(config);
@@ -89,69 +84,31 @@ public class InterConstantPropagation extends
         loadInstanceFieldOn = new HybridArrayHashMap<>();
         storeArrayOn = new HybridArrayHashMap<>();
         loadArrayOn = new HybridArrayHashMap<>();
-        potentialFieldAliasOf = new HybridArrayHashMap<>();
-        potentialArrayAliasOf = new HybridArrayHashMap<>();
-        // variables involved with field/array access are recorded
-        Set<Var> baseInvolvedFieldAccess = new HybridArrayHashSet<>();
-        Set<Var> baseInvolvedArrayAccess = new HybridArrayHashSet<>();
 
-        for (Stmt stmt:icfg.getNodes()) {
-            if (stmt instanceof StoreField storeField) {
-                Var var = storeField.getRValue();
-                if (!canHoldInt(var)) continue;
-                if (storeField.isStatic()) {
+        pta.getCallGraph().reachableMethods().forEach(m -> {
+            IR ir = m.getIR();
+            for (Stmt stmt : ir.getStmts()) {
+                if (stmt instanceof StoreField storeField && storeField.isStatic()) {
                     storeStaticFieldOn
                             .computeIfAbsent(storeField.getFieldRef().resolve(), set->new HybridArrayHashSet<>())
                             .add(storeField);
-                }else {
-                    Var base = ((InstanceFieldAccess) storeField.getFieldAccess()).getBase();
-                    baseInvolvedFieldAccess.add(base);
-                    storeInstanceFieldOn.computeIfAbsent(base, set->new HybridArrayHashSet<>()).add(storeField);
-                }
-            }else if (stmt instanceof LoadField loadField) {
-                Var var = loadField.getLValue();
-                if (!canHoldInt(var)) continue;
-                if (loadField.isStatic()) {
+                }else if (stmt instanceof LoadField loadField && loadField.isStatic()) {
                     loadStaticFieldOn
                             .computeIfAbsent(loadField.getFieldRef().resolve(), set->new HybridArrayHashSet<>())
                             .add(loadField);
-                }else {
-                    Var base = ((InstanceFieldAccess) loadField.getFieldAccess()).getBase();
-                    baseInvolvedFieldAccess.add(base);
-                    loadInstanceFieldOn.computeIfAbsent(base, set -> new HybridArrayHashSet<>()).add(loadField);
-                }
-            }else if (stmt instanceof StoreArray storeArray) {
-                Var var = storeArray.getRValue();
-                if (!canHoldInt(var))continue;
-                Var base = storeArray.getArrayAccess().getBase();
-                baseInvolvedArrayAccess.add(base);
-                storeArrayOn.computeIfAbsent(base, set->new HybridArrayHashSet<>()).add(storeArray);
-            }else if (stmt instanceof LoadArray loadArray) {
-                Var var = loadArray.getLValue();
-                if (!canHoldInt(var)) continue;
-                Var base = loadArray.getArrayAccess().getBase();
-                baseInvolvedArrayAccess.add(base);
-                loadArrayOn.computeIfAbsent(base, set->new HybridArrayHashSet<>()).add(loadArray);
-            }
-        }
-        // for instance field, we need to search their alias
-        for (Var base: baseInvolvedFieldAccess) {
-            for (Var aliasBase: baseInvolvedFieldAccess) {
-                if (base.equals(aliasBase)){
-                    potentialFieldAliasOf.computeIfAbsent(base, set->new HybridArrayHashSet<>()).add(aliasBase);
-                }else if (pta.getPointsToSet(base).stream().anyMatch(obj -> pta.getPointsToSet(aliasBase).contains(obj))) {
-                    // there is intersection between two points-to set
-                    potentialFieldAliasOf.computeIfAbsent(base, set->new HybridArrayHashSet<>()).add(aliasBase);
                 }
             }
-        }
-        for (Var base: baseInvolvedArrayAccess) {
-            for (Var aliasBase: baseInvolvedArrayAccess) {
-                if (base.equals(aliasBase)){
-                    potentialArrayAliasOf.computeIfAbsent(base, set->new HybridArrayHashSet<>()).add(aliasBase);
-                }
-                if (pta.getPointsToSet(base).stream().anyMatch(obj -> pta.getPointsToSet(aliasBase).contains(obj))) {
-                    potentialArrayAliasOf.computeIfAbsent(base, set->new HybridArrayHashSet<>()).add(aliasBase);
+        });
+        for (Var base:pta.getVars()){
+            for (Var var:pta.getVars()) {
+                if (hasIntersection(pta.getPointsToSet(base), pta.getPointsToSet(var))) {
+                    // connect store/load statements of array/instance field with corresponding variable.
+                    // For each variable, the relevant statements of its aliases
+                    // (regardless of the index of array) are also included
+                    storeInstanceFieldOn.computeIfAbsent(base, set->new HybridArrayHashSet<>()).addAll(var.getStoreFields());
+                    loadInstanceFieldOn.computeIfAbsent(base, set->new HybridArrayHashSet<>()).addAll(var.getLoadFields());
+                    storeArrayOn.computeIfAbsent(base, set->new HybridArrayHashSet<>()).addAll(var.getStoreArrays());
+                    loadArrayOn.computeIfAbsent(base, set->new HybridArrayHashSet<>()).addAll(var.getLoadArrays());
                 }
             }
         }
@@ -197,7 +154,6 @@ public class InterConstantPropagation extends
     }
 
     protected boolean transferStoreFieldNode(StoreField storeField, CPFact in, CPFact out) {
-//        boolean isUpdated = cp.transferNode(storeField, in, out);
         boolean isUpdated = out.copyFrom(in);
         Var x = storeField.getRValue();
         if (isUpdated && ConstantPropagation.canHoldInt(x)) {
@@ -205,54 +161,49 @@ public class InterConstantPropagation extends
             JField jField = storeField.getFieldRef().resolve();
             if (storeField.isStatic()){
                 Set<LoadField> loadStaticSet = loadStaticFieldOn.get(jField);
-                if (loadStaticSet!=null)solver.addToUpdate(loadStaticSet);
+                if (loadStaticSet!=null) solver.workListAdd(loadStaticSet);
             }else {
                 InstanceFieldAccess fieldAccess = (InstanceFieldAccess) storeField.getFieldAccess();
                 Var base = fieldAccess.getBase();
-                for (Var aliasBase: potentialFieldAliasOf.get(base)) {
-                    Set<LoadField> loadInstanceSet = loadInstanceFieldOn.get(aliasBase);
-                    if (loadInstanceSet == null) continue;
-                    for (LoadField loadInstance: loadInstanceSet) {
-                        if (loadInstance.getFieldRef().resolve().equals(jField)) solver.addToUpdate(loadInstance);
-                    }
+                Set<LoadField> loadInstanceSet = loadInstanceFieldOn.get(base);
+                if (loadInstanceSet != null) {
+                    loadInstanceSet.stream()
+                            .filter(loadField -> loadField.getFieldRef().resolve().equals(jField))
+                            .forEach(solver::workListAdd);
                 }
             }
         }
         return isUpdated;
     }
+
     protected boolean transferLoadFieldNode(LoadField loadField, CPFact in, CPFact out) {
         Var x = loadField.getLValue();
-        // the field can not hold int
-        if (!canHoldInt(x)) return out.copyFrom(in);
+        if (!ConstantPropagation.canHoldInt(x)) return out.copyFrom(in);
         CPFact inCopy = in.copy();
 
         JField jField = loadField.getFieldRef().resolve();
-        Value valueFromLoad = Value.getUndef();
         if (loadField.isStatic()) {
             // process the load statement of static fields x = T.f
             Set<StoreField> storeStaticSet = storeStaticFieldOn.get(jField);
-            assert storeStaticSet != null;
-            for (StoreField storeStatic: storeStaticSet) {
-                Var var = storeStatic.getRValue();
-                valueFromLoad = cp.meetValue(valueFromLoad, solver.getOutFact(storeStatic).get(var));
+            if (storeStaticSet != null) {
+                storeStaticSet.stream()
+                        .map(storeField -> solver.getOutFact(storeField).get(storeField.getRValue()))
+                        .reduce(cp::meetValue)
+                        .ifPresent(loadedValue -> inCopy.update(x, loadedValue));
             }
         }else {
             // process the load statement of instance fields x = o.f
             InstanceFieldAccess fieldAccess = (InstanceFieldAccess)loadField.getFieldAccess();
             Var base = fieldAccess.getBase();
-            // search the aliases
-            for (Var aliasBase: potentialFieldAliasOf.get(base)) {
-                Set<StoreField> storeInstanceSet = storeInstanceFieldOn.get(aliasBase);
-                if (storeInstanceSet == null) continue; // this alias does not store field
-                for (StoreField storeInstance: storeInstanceSet) {
-                    if (!storeInstance.getFieldRef().resolve().equals(jField))continue;
-                    // meet value stored in aliases
-                    Var var = storeInstance.getRValue();
-                    valueFromLoad = cp.meetValue(valueFromLoad, solver.getOutFact(storeInstance).get(var));
-                }
+            Set<StoreField> storeInstanceSet = storeInstanceFieldOn.get(base);
+            if (storeInstanceSet != null) {
+                storeInstanceSet.stream()
+                        .filter(storeField -> jField.equals(storeField.getFieldRef().resolve()))
+                        .map(storeField -> solver.getOutFact(storeField).get(storeField.getRValue()))
+                        .reduce(cp::meetValue)
+                        .ifPresent(loadedValue -> inCopy.update(x, loadedValue));
             }
         }
-        inCopy.update(x, cp.meetValue(inCopy.get(x), valueFromLoad));
         return out.copyFrom(inCopy);
     }
 
@@ -261,17 +212,8 @@ public class InterConstantPropagation extends
         Var x = storeArray.getRValue();
         if (isUpdated && ConstantPropagation.canHoldInt(x)) {
             Var base = storeArray.getArrayAccess().getBase();
-            Var indexVar = storeArray.getArrayAccess().getIndex();
-            for (Var aliasBase: potentialArrayAliasOf.get(base)) {
-                Set<LoadArray> loadArraySet = loadArrayOn.get(aliasBase);
-                if (loadArraySet == null) continue;
-                for (LoadArray loadArray: loadArraySet) {
-                    Var aliasIndexVar = loadArray.getArrayAccess().getIndex();
-                    if (isAliasArrayIndex(in.get(indexVar), solver.getOutFact(loadArray).get(aliasIndexVar))) {
-                        solver.addToUpdate(loadArray);
-                    }
-                }
-            }
+            Set<LoadArray> loadArraySet = loadArrayOn.get(base);
+            if (loadArraySet != null) loadArraySet.forEach(solver::workListAdd);
         }
         return isUpdated;
     }
@@ -282,21 +224,17 @@ public class InterConstantPropagation extends
         CPFact inCopy = in.copy();
 
         Var indexVar = loadArray.getArrayAccess().getIndex();
-        Value valueFromLoad = Value.getUndef();
         Var base = loadArray.getArrayAccess().getBase();
-        // search the aliases
-        for (Var aliasBase : potentialArrayAliasOf.get(base)) {
-            Set<StoreArray> storeArraySet = storeArrayOn.get(aliasBase);
-            if (storeArraySet == null) continue; // this alias does not store array
-            for (StoreArray storeArray: storeArraySet) {
-                Var aliasIndexVar = storeArray.getArrayAccess().getIndex();
-                if (isAliasArrayIndex(in.get(indexVar), solver.getOutFact(storeArray).get(aliasIndexVar))) {
-                    Var var = storeArray.getRValue();
-                    valueFromLoad = cp.meetValue(valueFromLoad, solver.getOutFact(storeArray).get(var));
-                }
-            }
+        Set<StoreArray> storeArraySet = storeArrayOn.get(base);
+        if (storeArraySet != null) {
+            storeArraySet.stream()
+                    .filter(storeArray
+                            -> isAliasArrayIndex(in.get(indexVar),
+                            solver.getOutFact(storeArray).get(storeArray.getArrayAccess().getIndex())))
+                    .map(storeArray -> solver.getOutFact(storeArray).get(storeArray.getRValue()))
+                    .reduce(cp::meetValue)
+                    .ifPresent(value -> inCopy.update(x, value));
         }
-        inCopy.update(x, cp.meetValue(inCopy.get(x), valueFromLoad));
         return out.copyFrom(inCopy);
 //        return true;
     }
@@ -336,7 +274,7 @@ public class InterConstantPropagation extends
         for (int i = 0; i<argList.size(); i++) {
             Var arg = argList.get(i);
             Var param = paramList.get(i);
-            if (canHoldInt(arg)) {
+            if (ConstantPropagation.canHoldInt(arg)) {
                 // also take int array into consideration.
                 calleeInFact.update(param, callSiteOut.get(arg));
             }
@@ -359,26 +297,18 @@ public class InterConstantPropagation extends
 //        return null;
     }
 
-
-    public static boolean canHoldInt(Var var) {
-        Type type = var.getType();
-        if (type instanceof ArrayType arrayType && arrayType.elementType() instanceof PrimitiveType primitiveType) {
-            switch (primitiveType) {
-                case BYTE:
-                case SHORT:
-                case INT:
-                case CHAR:
-                case BOOLEAN:
-                    return true;
-            }
-        }
-        return ConstantPropagation.canHoldInt(var);
-    }
-    public static boolean isAliasArrayIndex(Value value1, Value value2) {
+    protected  boolean isAliasArrayIndex(Value value1, Value value2) {
         if (value1.isUndef() || value2.isUndef())return false;
         if (value1.isConstant() && value2.isConstant()) {
             return value1.getConstant() == value2.getConstant();
         }
         return true;
+    }
+
+    protected boolean hasIntersection (Set<Obj> pts1, Set<Obj> pts2) {
+        // if the points-to set of var x is empty and x.f exists,
+        // x.f cannot be alias of any pointer, even of itself.
+        if (pts1.isEmpty() || pts2.isEmpty()) return false;
+        return pts1.stream().anyMatch(pts2::contains);
     }
 }
